@@ -80,7 +80,18 @@ float4 PSMain(VSOut input) : SV_TARGET
         private PixelShader _pixelShader;
         private SamplerState _sampler;
         private Buffer _constantBuffer;
+        private BlendState _alphaBlend;
+        private Texture2D _cursorTexture;
+        private ShaderResourceView _cursorView;
+        private IntPtr _cursorHandle;
+        private int _cursorHotspotX;
+        private int _cursorHotspotY;
+        private bool _cursorReady;
+        private Native.POINT _cursorPosition;
         private bool _disposed;
+
+        /// <summary>Draw the mouse cursor over the mirrored picture.</summary>
+        public bool ShowCursor { get; set; }
 
         public Action<string> Log { get; set; }
 
@@ -156,6 +167,32 @@ float4 PSMain(VSOut input) : SV_TARGET
 
             _constantBuffer = new Buffer(_device, Utilities.SizeOf<Vector4>(), ResourceUsage.Default,
                 BindFlags.ConstantBuffer, CpuAccessFlags.None, ResourceOptionFlags.None, 0);
+
+            var blend = new BlendStateDescription();
+            blend.RenderTarget[0].IsBlendEnabled = true;
+            blend.RenderTarget[0].SourceBlend = BlendOption.SourceAlpha;
+            blend.RenderTarget[0].DestinationBlend = BlendOption.InverseSourceAlpha;
+            blend.RenderTarget[0].BlendOperation = BlendOperation.Add;
+            blend.RenderTarget[0].SourceAlphaBlend = BlendOption.One;
+            blend.RenderTarget[0].DestinationAlphaBlend = BlendOption.InverseSourceAlpha;
+            blend.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
+            blend.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
+            _alphaBlend = new BlendState(_device, blend);
+
+            _cursorTexture = new Texture2D(_device, new Texture2DDescription
+            {
+                Width = CursorImage.Size,
+                Height = CursorImage.Size,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.B8G8R8A8_UNorm,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Dynamic,
+                BindFlags = BindFlags.ShaderResource,
+                CpuAccessFlags = CpuAccessFlags.Write,
+                OptionFlags = ResourceOptionFlags.None
+            });
+            _cursorView = new ShaderResourceView(_device, _cursorTexture);
 
             adapter.Dispose();
         }
@@ -244,6 +281,14 @@ float4 PSMain(VSOut input) : SV_TARGET
         public bool Tick()
         {
             if (_disposed) return false;
+
+            var cursorChanged = RefreshCursor();
+            if (cursorChanged)
+            {
+                // Desktop Duplication may not deliver a frame when only the pointer
+                // moved, so ask every target to repaint itself with the new cursor.
+                foreach (var target in _targets.Values) target.NeedsPresent = true;
+            }
 
             var changed = false;
             foreach (var source in _sources.Values)
@@ -356,6 +401,8 @@ float4 PSMain(VSOut input) : SV_TARGET
                 _context.Draw(3, 0);
                 _context.PixelShader.SetShaderResource(0, null);
 
+                if (ShowCursor) DrawCursor(target, source, destination);
+
                 target.SwapChain.Present(0, PresentFlags.None);
                 target.NeedsPresent = false;
             }
@@ -369,10 +416,129 @@ float4 PSMain(VSOut input) : SV_TARGET
             }
         }
 
+        private int _logCount;
+
+        private void LogOnce(string message)
+        {
+            if (_logCount > 20) return;
+            _logCount++;
+            var log = Log;
+            if (log != null) log(message);
+        }
+
         /// <summary>Marks every target as needing a repaint (after a layout change).</summary>
         public void Invalidate()
         {
             foreach (var target in _targets.Values) target.NeedsPresent = true;
+        }
+
+        private bool RefreshCursor()
+        {
+            if (!ShowCursor)
+            {
+                _cursorReady = false;
+                return false;
+            }
+
+            var info = new Native.CURSORINFO();
+            info.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(Native.CURSORINFO));
+            var ok = Native.GetCursorInfo(ref info);
+
+            if (!ok ||
+                (info.flags & Native.CURSOR_SHOWING) == 0 ||
+                info.hCursor == IntPtr.Zero)
+            {
+                var wasReady = _cursorReady;
+                _cursorReady = false;
+                return wasReady;
+            }
+
+            var moved = info.ptScreenPos.X != _cursorPosition.X || info.ptScreenPos.Y != _cursorPosition.Y;
+            _cursorPosition = info.ptScreenPos;
+
+            if (info.hCursor == _cursorHandle && _cursorReady) return moved;
+
+            int hotspotX;
+            int hotspotY;
+            byte[] pixels;
+            try
+            {
+                pixels = CursorImage.Capture(out hotspotX, out hotspotY);
+            }
+            catch (Exception ex)
+            {
+                LogOnce("cursor capture failed: " + ex.Message);
+                _cursorReady = false;
+                return false;
+            }
+
+            if (pixels == null)
+            {
+                LogOnce("cursor capture returned null");
+                _cursorReady = false;
+                return false;
+            }
+
+            try
+            {
+                UploadCursor(pixels);
+            }
+            catch (Exception)
+            {
+                _cursorReady = false;
+                return false;
+            }
+
+            _cursorHandle = info.hCursor;
+            _cursorHotspotX = hotspotX;
+            _cursorHotspotY = hotspotY;
+            _cursorReady = true;
+            return true;
+        }
+
+        private void UploadCursor(byte[] pixels)
+        {
+            var stride = CursorImage.Size * 4;
+            var box = _context.MapSubresource(_cursorTexture, 0, MapMode.WriteDiscard,
+                SharpDX.Direct3D11.MapFlags.None);
+            for (var y = 0; y < CursorImage.Size; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(pixels, y * stride,
+                    box.DataPointer + y * box.RowPitch, stride);
+            }
+            _context.UnmapSubresource(_cursorTexture, 0);
+        }
+
+        private void DrawCursor(Target target, Source source, Rectangle destination)
+        {
+            if (!_cursorReady) return;
+
+            var sourceWidth = source.Frame.Description.Width;
+            var sourceHeight = source.Frame.Description.Height;
+            var relativeX = _cursorPosition.X - source.Bounds.X;
+            var relativeY = _cursorPosition.Y - source.Bounds.Y;
+
+            // The pointer belongs to another display: nothing to draw here.
+            if (relativeX < -CursorImage.Size || relativeY < -CursorImage.Size ||
+                relativeX > sourceWidth + CursorImage.Size || relativeY > sourceHeight + CursorImage.Size)
+                return;
+
+            var scale = destination.Width / (float)sourceWidth;
+            var size = (int)Math.Round(CursorImage.Size * scale);
+            if (size <= 0) return;
+
+            var x = destination.X + (int)Math.Round((relativeX - _cursorHotspotX) * scale);
+            var y = destination.Y + (int)Math.Round((relativeY - _cursorHotspotY) * scale);
+
+            var uv = new Vector4(1f, 1f, 0f, 0f);
+            _context.UpdateSubresource(ref uv, _constantBuffer);
+
+            _context.Rasterizer.SetViewport(new Viewport(x, y, size, size, 0.0f, 1.0f));
+            _context.OutputMerger.SetBlendState(_alphaBlend);
+            _context.PixelShader.SetShaderResource(0, _cursorView);
+            _context.Draw(3, 0);
+            _context.OutputMerger.SetBlendState(null);
+            _context.PixelShader.SetShaderResource(0, null);
         }
 
         private Output FindOutput(string gdiName)
@@ -434,6 +600,9 @@ float4 PSMain(VSOut input) : SV_TARGET
             _sources.Clear();
 
             if (_constantBuffer != null) _constantBuffer.Dispose();
+            if (_cursorView != null) _cursorView.Dispose();
+            if (_cursorTexture != null) _cursorTexture.Dispose();
+            if (_alphaBlend != null) _alphaBlend.Dispose();
             if (_sampler != null) _sampler.Dispose();
             if (_pixelShader != null) _pixelShader.Dispose();
             if (_vertexShader != null) _vertexShader.Dispose();

@@ -97,7 +97,8 @@ Compress-Archive .\dist\* .\SoftSplit-win64.zip -Force
 .\SoftSplit.exe --verbose     # подробный вывод в консоль и журнал
 .\SoftSplit.exe --diagnose    # отчёт о дисплеях и топологии
 .\SoftSplit.exe --probe-dx    # есть ли Direct3D 11 и Desktop Duplication
-.\SoftSplit.exe --gdi         # принудительно резервный путь (нужен для отладки курсора)
+.\SoftSplit.exe --test-cursor # читается ли форма курсора (альфа и габариты)
+.\SoftSplit.exe --gdi         # принудительно резервный путь
 .\SoftSplit.exe --minimized   # только трей, без окна настроек
 ```
 

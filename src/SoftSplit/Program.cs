@@ -21,7 +21,7 @@ namespace SoftSplit
             var forceGdi = Has(args, "--gdi");
             var probeDx = Has(args, "--probe-dx");
 
-            if (diagnose || verbose || probeDx)
+            if (diagnose || verbose || probeDx || Has(args, "--test-cursor"))
             {
                 if (!ConsoleHost.AttachToParent()) ConsoleHost.Allocate();
             }
@@ -35,6 +35,12 @@ namespace SoftSplit
             if (probeDx)
             {
                 Console.WriteLine(DxProbe.Run());
+                return 0;
+            }
+
+            if (Has(args, "--test-cursor"))
+            {
+                Console.WriteLine(TestCursor());
                 return 0;
             }
 
@@ -76,8 +82,7 @@ namespace SoftSplit
             return 0;
         }
 
-        private static bool Has(string[] args, string flag)
-        {
+        private static bool Has(string[] args, string flag)        {
             return args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
         }
 
@@ -140,6 +145,40 @@ namespace SoftSplit
             catch (Exception)
             {
             }
+        }
+
+        private static string TestCursor()
+        {
+            int hotspotX;
+            int hotspotY;
+            var pixels = CursorImage.Capture(out hotspotX, out hotspotY);
+            if (pixels == null) return "cursor image: null (no cursor?)";
+
+            var opaque = 0;
+            var maxAlpha = 0;
+            var minX = int.MaxValue;
+            var minY = int.MaxValue;
+            var maxX = -1;
+            var maxY = -1;
+            const int size = CursorImage.Size;
+
+            for (var y = 0; y < size; y++)
+            {
+                for (var x = 0; x < size; x++)
+                {
+                    var alpha = pixels[(y * size + x) * 4 + 3];
+                    if (alpha == 0) continue;
+                    opaque++;
+                    if (alpha > maxAlpha) maxAlpha = alpha;
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            return string.Format("hotspot={0},{1} opaque={2} maxAlpha={3} bbox={4},{5}..{6},{7}",
+                hotspotX, hotspotY, opaque, maxAlpha, minX, minY, maxX, maxY);
         }
 
         private static string BuildDiagnostics()

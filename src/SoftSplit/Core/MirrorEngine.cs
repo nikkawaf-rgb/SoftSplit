@@ -207,6 +207,7 @@ namespace SoftSplit.Core
             }
 
             _dxgi = session;
+            _dxgi.ShowCursor = ShowCursor;
             return true;
         }
 
