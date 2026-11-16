@@ -1,0 +1,22 @@
+# Logs and local artifacts
+*.log
+*.tmp
+*.pid
+
+# Editor / IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Build output (for future exe/installer)
+bin/
+obj/
+dist/
+out/
+
+# Screenshots made during debugging
+tv*.png
+lg*.png
+screenshots/

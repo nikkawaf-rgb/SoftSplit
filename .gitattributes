@@ -1,0 +1,6 @@
+# Normalize line endings: batch files must stay CRLF, everything else LF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.md  text eol=lf
+*.json text eol=lf
